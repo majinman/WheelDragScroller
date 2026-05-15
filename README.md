@@ -1,8 +1,8 @@
 # Wheel Drag Scroller
 
-마우스 휠 버튼을 누른 채 드래그하면 드래그 방향으로 전역 자동 스크롤을 보내는 macOS 메뉴바 앱입니다. 윈도우의 가운데 버튼 자동 스크롤처럼, 버튼을 떼기 전까지 기준점에서 떨어진 방향과 거리만큼 계속 스크롤됩니다.
+A macOS menu bar app that enables Windows-style middle-button auto-scroll. Hold the mouse wheel button, drag in any direction, and keep scrolling until you release.
 
-## 빌드
+## Build
 
 ```bash
 cd ~/WheelDragScroller
@@ -10,15 +10,24 @@ chmod +x Scripts/make-app.sh
 Scripts/make-app.sh
 ```
 
-앱 번들은 `build/Wheel Drag Scroller.app`에 생성됩니다.
+The app bundle is created at `build/Wheel Drag Scroller.app`.
 
-## 사용
+## Features
 
-1. 앱을 실행합니다.
-2. 메뉴바의 스크롤 아이콘에서 기능 켜기/끄기, 부팅 시 자동실행을 설정합니다.
-3. 메뉴 안의 슬라이더로 자동 스크롤 감도를 조정하고, 체크박스로 수직/수평 및 마우스/트랙패드별 반전 여부를 설정합니다.
-4. 처음 실행할 때 macOS가 권한을 요구하면 시스템 설정 > 개인정보 보호 및 보안에서 손쉬운 사용과 입력 모니터링을 허용합니다.
+- Windows-style middle-button drag scrolling
+- Adjustable auto-scroll acceleration, curve, and max speed
+- Optional vertical and horizontal scroll reversal
+- Separate reversal toggles for mouse and trackpad
+- Menu bar toggle and launch-at-login support
 
-권한을 켠 뒤 앱을 한 번 종료했다가 다시 실행하면 안정적으로 동작합니다.
+## Usage
 
-트랙패드와 마우스 구분은 macOS 스크롤 이벤트의 연속 스크롤 여부를 기준으로 판별합니다. 일반 휠 마우스와 트랙패드는 잘 나뉘지만, Magic Mouse처럼 연속 스크롤을 보내는 장치는 트랙패드 쪽으로 분류될 수 있습니다.
+1. Launch the app.
+2. Use the menu bar icon to enable or disable scrolling and configure launch at login.
+3. Adjust auto-scroll sensitivity with the sliders in the menu.
+4. Use the checkboxes to control vertical or horizontal reversal and whether those reversal rules apply to mouse or trackpad input.
+5. When macOS prompts for permissions, allow both `Accessibility` and `Input Monitoring` in `System Settings > Privacy & Security`.
+
+After granting permissions, quitting and reopening the app usually helps macOS apply them cleanly.
+
+Trackpad and mouse input are distinguished using macOS scroll event characteristics. Standard wheel mice and trackpads are generally detected correctly, but devices such as Magic Mouse may behave more like trackpads.
