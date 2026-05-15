@@ -6,6 +6,11 @@ private let bundleIdentifier = "com.codex.WheelDragScroller"
 private let appName = "Wheel Drag Scroller"
 private let generatedScrollMarker: Int64 = 0x57445343
 
+enum AppPaths {
+    static let installedAppURL = URL(fileURLWithPath: "/Applications", isDirectory: true)
+        .appendingPathComponent("\(appName).app", isDirectory: true)
+}
+
 final class Settings {
     static let shared = Settings()
 
@@ -100,15 +105,20 @@ final class LaunchAtLoginManager {
         FileManager.default.fileExists(atPath: plistURL.path)
     }
 
+    func refreshIfEnabled() throws {
+        guard isEnabled else { return }
+        try setEnabled(true)
+    }
+
     func setEnabled(_ enabled: Bool) throws {
         let directory = plistURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
         if enabled {
-            let executablePath = Bundle.main.executablePath ?? CommandLine.arguments[0]
+            let appPath = AppPaths.installedAppURL.path
             let plist: [String: Any] = [
                 "Label": bundleIdentifier,
-                "ProgramArguments": [executablePath],
+                "ProgramArguments": ["/usr/bin/open", appPath],
                 "RunAtLoad": true,
                 "KeepAlive": false
             ]
@@ -117,6 +127,38 @@ final class LaunchAtLoginManager {
         } else if FileManager.default.fileExists(atPath: plistURL.path) {
             try FileManager.default.removeItem(at: plistURL)
         }
+    }
+}
+
+final class AppInstaller {
+    func isRunningInstalledApp() -> Bool {
+        Bundle.main.bundleURL.standardizedFileURL == AppPaths.installedAppURL.standardizedFileURL
+    }
+
+    func installCurrentAppIfNeeded() throws -> Bool {
+        guard Bundle.main.bundleURL.pathExtension == "app" else { return false }
+
+        let sourceURL = Bundle.main.bundleURL.standardizedFileURL
+        let destinationURL = AppPaths.installedAppURL.standardizedFileURL
+        guard sourceURL != destinationURL else { return false }
+
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(at: destinationURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            try fileManager.removeItem(at: destinationURL)
+        }
+
+        try fileManager.copyItem(at: sourceURL, to: destinationURL)
+        return true
+    }
+
+    func relaunchInstalledApp() {
+        NSWorkspace.shared.openApplication(
+            at: AppPaths.installedAppURL,
+            configuration: NSWorkspace.OpenConfiguration(),
+            completionHandler: nil
+        )
     }
 }
 
@@ -136,14 +178,27 @@ final class WheelDragEngine {
     private var accumulatedX: CGFloat = 0
     private var accumulatedY: CGFloat = 0
 
+    static func hasAccessibilityPermission(prompt: Bool) -> Bool {
+        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt] as CFDictionary
+        return AXIsProcessTrustedWithOptions(options)
+    }
+
+    static func hasInputMonitoringPermission(prompt: Bool) -> Bool {
+        if CGPreflightListenEventAccess() {
+            return true
+        }
+
+        return prompt ? CGRequestListenEventAccess() : false
+    }
+
     var isRunning: Bool {
         eventTap != nil
     }
 
     func start() -> StartFailure? {
         guard eventTap == nil else { return nil }
-        guard hasAccessibilityPermission(prompt: true) else { return .accessibilityPermission }
-        guard hasInputMonitoringPermission(prompt: true) else { return .inputMonitoringPermission }
+        guard Self.hasAccessibilityPermission(prompt: true) else { return .accessibilityPermission }
+        guard Self.hasInputMonitoringPermission(prompt: true) else { return .inputMonitoringPermission }
 
         let mask =
             (1 << CGEventType.otherMouseDown.rawValue) |
@@ -404,19 +459,6 @@ final class WheelDragEngine {
         let curved = pow(effectiveDistance, Settings.shared.curve) * acceleration
         return min(curved, maxPixelsPerFrame) * sign
     }
-
-    private func hasAccessibilityPermission(prompt: Bool) -> Bool {
-        let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt] as CFDictionary
-        return AXIsProcessTrustedWithOptions(options)
-    }
-
-    private func hasInputMonitoringPermission(prompt: Bool) -> Bool {
-        if CGPreflightListenEventAccess() {
-            return true
-        }
-
-        return prompt ? CGRequestListenEventAccess() : false
-    }
 }
 
 final class TuningMenuView: NSView {
@@ -658,9 +700,12 @@ final class TuningMenuView: NSView {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings = Settings.shared
     private let launchAtLoginManager = LaunchAtLoginManager()
+    private let appInstaller = AppInstaller()
     private let engine = WheelDragEngine()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
+    private let accessibilityStatusItem = NSMenuItem()
+    private let inputMonitoringStatusItem = NSMenuItem()
     private let enabledItem = NSMenuItem()
     private let launchAtLoginItem = NSMenuItem()
     private let tuningView = TuningMenuView()
@@ -668,9 +713,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        if ensureInstalledApp() {
+            return
+        }
         configureStatusItem()
         settings.launchAtLogin = launchAtLoginManager.isEnabled
+        try? launchAtLoginManager.refreshIfEnabled()
         applyEnabledState()
+    }
+
+    private func ensureInstalledApp() -> Bool {
+        guard !appInstaller.isRunningInstalledApp() else { return false }
+
+        do {
+            let installed = try appInstaller.installCurrentAppIfNeeded()
+            if installed {
+                appInstaller.relaunchInstalledApp()
+                NSApp.terminate(nil)
+                return true
+            }
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.messageText = "\(appName)을 Applications에 설치하지 못했습니다"
+            alert.informativeText = "권한과 자동실행이 안정적으로 동작하려면 /Applications/\(appName).app 경로로 실행되는 편이 좋습니다."
+            alert.runModal()
+        }
+
+        return false
     }
 
     private func configureStatusItem() {
@@ -687,6 +756,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         launchAtLoginItem.target = self
         launchAtLoginItem.action = #selector(toggleLaunchAtLogin)
         menu.addItem(launchAtLoginItem)
+
+        menu.addItem(.separator())
+        accessibilityStatusItem.isEnabled = false
+        inputMonitoringStatusItem.isEnabled = false
+        menu.addItem(accessibilityStatusItem)
+        menu.addItem(inputMonitoringStatusItem)
+
+        let accessibilityItem = NSMenuItem(title: "손쉬운 사용 열기", action: #selector(openAccessibilitySettings), keyEquivalent: "")
+        accessibilityItem.target = self
+        menu.addItem(accessibilityItem)
+
+        let inputMonitoringItem = NSMenuItem(title: "입력 모니터링 열기", action: #selector(openInputMonitoringSettings), keyEquivalent: "")
+        inputMonitoringItem.target = self
+        menu.addItem(inputMonitoringItem)
 
         menu.addItem(.separator())
         let tuningItem = NSMenuItem()
@@ -720,8 +803,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func refreshMenu() {
+        let hasAccessibility = WheelDragEngine.hasAccessibilityPermission(prompt: false)
+        let hasInputMonitoring = WheelDragEngine.hasInputMonitoringPermission(prompt: false)
+
         enabledItem.state = settings.isEnabled ? .on : .off
         launchAtLoginItem.state = launchAtLoginManager.isEnabled ? .on : .off
+        accessibilityStatusItem.title = "손쉬운 사용: " + (hasAccessibility ? "허용됨" : "필요")
+        inputMonitoringStatusItem.title = "입력 모니터링: " + (hasInputMonitoring ? "허용됨" : "필요")
         statusItem.button?.contentTintColor = settings.isEnabled ? nil : .secondaryLabelColor
     }
 
@@ -739,10 +827,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             alert.informativeText = "손쉬운 사용 권한과 별개로, 마우스 버튼 입력을 전역에서 감지하려면 입력 모니터링 권한이 필요합니다. 시스템 설정에서 \(appName)을 입력 모니터링에도 허용해 주세요."
             alert.addButton(withTitle: "입력 모니터링 열기")
         case .eventTapPermission:
-            permissionSettingsPane = "Privacy_Accessibility"
+            permissionSettingsPane = "Privacy_ListenEvent"
             alert.messageText = "\(appName)이 마우스 이벤트를 감지하지 못했습니다"
-            alert.informativeText = "손쉬운 사용이 이미 켜져 있다면 입력 모니터링 권한이 막혀 있거나, 앱을 다시 빌드해 macOS 권한 기록과 현재 앱 서명이 어긋난 상태일 수 있습니다. 손쉬운 사용과 입력 모니터링에서 앱을 제거/재추가해 주세요."
-            alert.addButton(withTitle: "권한 설정 열기")
+            alert.informativeText = "손쉬운 사용과 입력 모니터링이 둘 다 허용돼 있어야 합니다. 특히 입력 모니터링이 빠져 있으면 기능 켜기가 다시 꺼집니다. 두 권한을 모두 확인해 주세요."
+            alert.addButton(withTitle: "입력 모니터링 열기")
         }
         alert.addButton(withTitle: "나중에")
         if alert.runModal() == .alertFirstButtonReturn {
@@ -772,6 +860,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?\(permissionSettingsPane)") {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    @objc private func openAccessibilitySettings() {
+        permissionSettingsPane = "Privacy_Accessibility"
+        openPrivacySettings()
+    }
+
+    @objc private func openInputMonitoringSettings() {
+        permissionSettingsPane = "Privacy_ListenEvent"
+        openPrivacySettings()
     }
 
     @objc private func quit() {
