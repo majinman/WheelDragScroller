@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import CoreGraphics
+import CryptoKit
 
 private let bundleIdentifier = "com.codex.WheelDragScroller"
 private let appName = "Wheel Drag Scroller"
@@ -159,6 +160,38 @@ final class AppInstaller {
             configuration: NSWorkspace.OpenConfiguration(),
             completionHandler: nil
         )
+    }
+}
+
+final class PermissionResetManager {
+    private let defaults = UserDefaults.standard
+    private let fingerprintKey = "permissionResetAppFingerprint"
+
+    func resetIfCurrentAppChanged() {
+        guard let fingerprint = currentAppFingerprint() else { return }
+        guard defaults.string(forKey: fingerprintKey) != fingerprint else { return }
+
+        reset(service: "Accessibility")
+        reset(service: "ListenEvent")
+        defaults.set(fingerprint, forKey: fingerprintKey)
+    }
+
+    private func currentAppFingerprint() -> String? {
+        guard let executableURL = Bundle.main.executableURL,
+              let executableData = try? Data(contentsOf: executableURL) else {
+            return nil
+        }
+
+        let digest = SHA256.hash(data: executableData)
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private func reset(service: String) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        process.arguments = ["reset", service, bundleIdentifier]
+        try? process.run()
+        process.waitUntilExit()
     }
 }
 
@@ -737,6 +770,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let settings = Settings.shared
     private let launchAtLoginManager = LaunchAtLoginManager()
     private let appInstaller = AppInstaller()
+    private let permissionResetManager = PermissionResetManager()
     private let engine = WheelDragEngine()
     private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let menu = NSMenu()
@@ -752,6 +786,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if ensureInstalledApp() {
             return
         }
+        permissionResetManager.resetIfCurrentAppChanged()
         configureStatusItem()
         settings.launchAtLogin = launchAtLoginManager.isEnabled
         try? launchAtLoginManager.refreshIfEnabled()
