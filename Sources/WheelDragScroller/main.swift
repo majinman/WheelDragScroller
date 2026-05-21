@@ -172,11 +172,13 @@ final class WheelDragEngine {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var scrollTimer: Timer?
-    private var isDragging = false
+    private var middleButtonPressed = false
+    private var autoScrollActive = false
     private var anchorPoint = CGPoint.zero
     private var currentPoint = CGPoint.zero
     private var accumulatedX: CGFloat = 0
     private var accumulatedY: CGFloat = 0
+    private let activationDistance: CGFloat = 8
 
     static func hasAccessibilityPermission(prompt: Bool) -> Bool {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: prompt] as CFDictionary
@@ -256,6 +258,10 @@ final class WheelDragEngine {
             return handleScrollWheel(event)
         }
 
+        guard event.getIntegerValueField(.eventSourceUserData) != generatedScrollMarker else {
+            return Unmanaged.passUnretained(event)
+        }
+
         let buttonNumber = event.getIntegerValueField(.mouseEventButtonNumber)
         guard buttonNumber == 2 else {
             return Unmanaged.passUnretained(event)
@@ -263,23 +269,52 @@ final class WheelDragEngine {
 
         switch type {
         case .otherMouseDown:
-            isDragging = true
+            middleButtonPressed = true
+            autoScrollActive = false
             anchorPoint = event.location
             currentPoint = event.location
             accumulatedX = 0
             accumulatedY = 0
-            startAutoScroll()
             return nil
         case .otherMouseDragged:
-            guard isDragging else { return nil }
+            guard middleButtonPressed else { return Unmanaged.passUnretained(event) }
             currentPoint = event.location
+            if !autoScrollActive, shouldActivateAutoScroll() {
+                autoScrollActive = true
+                startAutoScroll()
+            }
             return nil
         case .otherMouseUp:
+            let shouldSendClick = middleButtonPressed && !autoScrollActive
+            let wasAutoScrolling = autoScrollActive
+            let clickPoint = anchorPoint
+            let flags = event.flags
             stopAutoScroll()
-            return nil
+            if shouldSendClick {
+                postMiddleClick(at: clickPoint, flags: flags)
+            }
+            return wasAutoScrolling || shouldSendClick ? nil : Unmanaged.passUnretained(event)
         default:
             return Unmanaged.passUnretained(event)
         }
+    }
+
+    private func postMiddleClick(at point: CGPoint, flags: CGEventFlags) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        let down = CGEvent(mouseEventSource: source, mouseType: .otherMouseDown, mouseCursorPosition: point, mouseButton: .center)
+        let up = CGEvent(mouseEventSource: source, mouseType: .otherMouseUp, mouseCursorPosition: point, mouseButton: .center)
+
+        [down, up].forEach { event in
+            event?.flags = flags
+            event?.setIntegerValueField(.eventSourceUserData, value: generatedScrollMarker)
+            event?.post(tap: .cghidEventTap)
+        }
+    }
+
+    private func shouldActivateAutoScroll() -> Bool {
+        let dx = currentPoint.x - anchorPoint.x
+        let dy = currentPoint.y - anchorPoint.y
+        return hypot(dx, dy) >= activationDistance
     }
 
     private func handleScrollWheel(_ event: CGEvent) -> Unmanaged<CGEvent>? {
@@ -407,7 +442,8 @@ final class WheelDragEngine {
     }
 
     private func stopAutoScroll() {
-        isDragging = false
+        middleButtonPressed = false
+        autoScrollActive = false
         scrollTimer?.invalidate()
         scrollTimer = nil
         accumulatedX = 0
@@ -415,7 +451,7 @@ final class WheelDragEngine {
     }
 
     private func tickAutoScroll() {
-        guard isDragging else { return }
+        guard autoScrollActive else { return }
 
         let dx = currentPoint.x - anchorPoint.x
         let dy = currentPoint.y - anchorPoint.y
